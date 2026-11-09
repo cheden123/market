@@ -1,3 +1,4 @@
+from contextlib import closing
 """Cost-bounded search scheduler for API.SH. Import functions do not spend credits."""
 import sqlite3
 from datetime import datetime, timezone
@@ -22,7 +23,7 @@ def run_once(cfg, api_key):
     db_path = Path(cfg["db_path"])
     db_path.parent.mkdir(parents=True,exist_ok=True)
     details=[]
-    with sqlite3.connect(db_path, timeout=30) as db:
+    with closing(sqlite3.connect(db_path, timeout=30)) as db:
         init_db(db)
         _ensure(db)
         day=datetime.now(timezone.utc).date().isoformat()
