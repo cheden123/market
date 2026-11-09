@@ -174,6 +174,7 @@ class Application(tk.Tk):
         ttk.Label(interior,text="API.SH API Key").grid(row=row,column=0,sticky="w",pady=5)
         self.api_key=tk.StringVar()
         ttk.Entry(interior,textvariable=self.api_key,width=48,show="•").grid(row=row,column=1,sticky="w",padx=12)
+        self.load_secrets()
         row+=1
         ttk.Label(interior,text="Интервал проверки, минут (не менее 15)").grid(row=row,column=0,sticky="w",pady=5)
         self.monitor_minutes=tk.StringVar(value=str(self.cfg.get("monitor",{}).get("interval_minutes",60)))
