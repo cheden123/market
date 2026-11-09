@@ -1,0 +1,56 @@
+[
+  {
+    "source": "demo",
+    "external_id": "1",
+    "title": "RTX 3070 8GB видеокарта",
+    "price": 21000,
+    "description": "Рабочая видеокарта",
+    "region": "Москва",
+    "url": "https://example.org/demo/1"
+  },
+  {
+    "source": "demo",
+    "external_id": "2",
+    "title": "RTX 3070 8GB видеокарта",
+    "price": 22000,
+    "description": "Рабочая видеокарта",
+    "region": "Москва",
+    "url": "https://example.org/demo/2"
+  },
+  {
+    "source": "demo",
+    "external_id": "3",
+    "title": "RTX 3070 8GB видеокарта",
+    "price": 20000,
+    "description": "Рабочая видеокарта",
+    "region": "Москва",
+    "url": "https://example.org/demo/3"
+  },
+  {
+    "source": "demo",
+    "external_id": "4",
+    "title": "RTX 3070 8GB видеокарта",
+    "price": 23000,
+    "description": "Рабочая видеокарта",
+    "region": "Москва",
+    "url": "https://example.org/demo/4"
+  },
+  {
+    "source": "demo",
+    "external_id": "5",
+    "title": "RTX 3070 8GB видеокарта",
+    "price": 21500,
+    "description": "Рабочая видеокарта",
+    "region": "Москва",
+    "url": "https://example.org/demo/5"
+  },
+  {
+    "source": "demo",
+    "external_id": "6",
+    "title": "RTX 3070 8GB видеокарта",
+    "price": 12000,
+    "description": "Рабочая видеокарта",
+    "region": "Москва",
+    "url": "https://example.org/demo/6"
+  }
+]
