@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from hunter import DEFAULT_CONFIG, init_db, ingest
+from monitor import run_once
 
 APP_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "MarketValueHunter"
 CONFIG = APP_DIR / "config.json"
@@ -35,8 +36,12 @@ class Application(tk.Tk):
         self.minsize(800, 580)
         self.cfg = load_config()
         self.busy = False
+        self.monitor_running = False
+        self.stop_monitor = threading.Event()
         self.create_widgets()
+        self.protocol("WM_DELETE_WINDOW", self.close_app)
         self.reload_data()
+        self.schedule_next()
 
     def create_widgets(self):
         style=ttk.Style(self)
@@ -66,7 +71,9 @@ class Application(tk.Tk):
         self.import_button=ttk.Button(bar,text="Загрузить объявления (JSON)",command=self.import_json)
         self.import_button.pack(side="left",padx=(0,8))
         ttk.Button(bar,text="Загрузить демо",command=self.import_demo).pack(side="left",padx=(0,8))
-        ttk.Button(bar,text="Обновить",command=self.reload_data).pack(side="left")
+        ttk.Button(bar,text="Обновить",command=self.reload_data).pack(side="left",padx=(0,8))
+        ttk.Button(bar,text="Проверить Авито сейчас",command=self.monitor_now).pack(side="left")
+
         ttk.Button(bar,text="Открыть объявление",command=self.open_selected).pack(side="right")
         cols=("score","price","market","profit","title","profile","url")
         self.table=ttk.Treeview(self.results,columns=cols,show="headings",selectmode="browse")
@@ -93,7 +100,7 @@ class Application(tk.Tk):
         ttk.Button(left,text="Удалить поиск",command=self.remove_profile).pack(fill="x")
         edit=ttk.Frame(frame)
         edit.pack(side="left",fill="both",expand=True)
-        fields=[("id","Название/ID поиска"),("keywords","Ключевые слова (через запятую)"),("exclude_keywords","Исключить слова"),("regions","Регионы (пусто = все)"),("max_price","Максимальная цена, ₽")]
+        fields=[("id","Название/ID поиска"),("keywords","Ключевые слова (через запятую)"),("exclude_keywords","Исключить слова"),("regions","Регионы (пусто = все)"),("max_price","Максимальная цена, ₽"),("search_url","Ссылка поиска Авито (для автомониторинга)")]
         self.profile_inputs={}
         for index,(key,label) in enumerate(fields):
             ttk.Label(edit,text=label).grid(row=index*2,column=0,sticky="w",pady=(6,2))
@@ -101,8 +108,8 @@ class Application(tk.Tk):
             inp.grid(row=index*2+1,column=0,sticky="ew",pady=(0,6))
             self.profile_inputs[key]=inp
         edit.columnconfigure(0,weight=1)
-        ttk.Label(edit,text="Все ключевые слова должны присутствовать в объявлении.\nДля поиска RTX 3070 укажите: rtx 3070",foreground="#555").grid(row=10,column=0,sticky="w",pady=12)
-        ttk.Button(edit,text="Сохранить поиск",command=self.save_profile).grid(row=11,column=0,sticky="w")
+        ttk.Label(edit,text="Все ключевые слова должны присутствовать в объявлении.\nДля поиска RTX 3070 укажите: rtx 3070",foreground="#555").grid(row=12,column=0,sticky="w",pady=12)
+        ttk.Button(edit,text="Сохранить поиск",command=self.save_profile).grid(row=13,column=0,sticky="w")
         self.refresh_profiles()
 
     def build_settings(self):
@@ -159,6 +166,25 @@ class Application(tk.Tk):
         self.ai_budget=tk.StringVar(value=str(self.cfg.get("ai",{}).get("max_reviews_per_run",3)))
         ttk.Entry(interior,textvariable=self.ai_budget,width=8).grid(row=row,column=1,sticky="w",padx=12)
         row+=1
+        ttk.Separator(interior).grid(row=row,column=0,columnspan=3,sticky="ew",pady=10)
+        row+=1
+        self.monitor_enabled=tk.BooleanVar(value=self.cfg.get("monitor",{}).get("enabled",False))
+        ttk.Checkbutton(interior,text="Автоматический поиск через API.SH (платные запросы)",variable=self.monitor_enabled).grid(row=row,column=0,columnspan=3,sticky="w")
+        row+=1
+        ttk.Label(interior,text="API.SH API Key").grid(row=row,column=0,sticky="w",pady=5)
+        self.api_key=tk.StringVar()
+        ttk.Entry(interior,textvariable=self.api_key,width=48,show="•").grid(row=row,column=1,sticky="w",padx=12)
+        row+=1
+        ttk.Label(interior,text="Интервал проверки, минут (не менее 15)").grid(row=row,column=0,sticky="w",pady=5)
+        self.monitor_minutes=tk.StringVar(value=str(self.cfg.get("monitor",{}).get("interval_minutes",60)))
+        ttk.Entry(interior,textvariable=self.monitor_minutes,width=10).grid(row=row,column=1,sticky="w",padx=12)
+        row+=1
+        ttk.Label(interior,text="Максимум API-запросов за сутки (0–50)").grid(row=row,column=0,sticky="w",pady=5)
+        self.monitor_budget=tk.StringVar(value=str(self.cfg.get("monitor",{}).get("max_calls_per_day",5)))
+        ttk.Entry(interior,textvariable=self.monitor_budget,width=10).grid(row=row,column=1,sticky="w",padx=12)
+        row+=1
+        ttk.Label(interior,text="Автопоиск требует ключ API.SH и ссылку Авито в профиле поиска.\nБесплатный лимит API.SH ограничен; превышение может стоить денег.",foreground="#555").grid(row=row,column=0,columnspan=3,sticky="w",pady=8)
+        row+=1
         ttk.Button(interior,text="Сохранить все настройки",command=self.save_settings).grid(row=row,column=0,sticky="w",pady=20)
 
     def load_secrets(self):
@@ -166,6 +192,7 @@ class Application(tk.Tk):
             import keyring
             self.bot_token.set(keyring.get_password(SERVICE,"telegram_token") or "")
             self.chat_id.set(keyring.get_password(SERVICE,"telegram_chat_id") or "")
+            if hasattr(self,"api_key"):self.api_key.set(keyring.get_password(SERVICE,"apish_key") or "")
         except Exception:
             pass
 
@@ -194,7 +221,7 @@ class Application(tk.Tk):
         ids={p["id"] for p in self.cfg["profiles"]}
         n=1
         while "search"+str(n) in ids:n+=1
-        self.cfg["profiles"].append({"id":"search"+str(n),"keywords":[],"exclude_keywords":[],"regions":[],"max_price":0})
+        self.cfg["profiles"].append({"id":"search"+str(n),"keywords":[],"exclude_keywords":[],"regions":[],"max_price":0,"search_url":""})
         self.persist()
         self.refresh_profiles(len(self.cfg["profiles"])-1)
 
@@ -215,7 +242,13 @@ class Application(tk.Tk):
             if not pid or any(p["id"]==pid for i,p in enumerate(self.cfg["profiles"]) if i!=index):raise ValueError("Название поиска должно быть уникальным.")
             max_price=float(values["max_price"] or 0)
             if max_price<0:raise ValueError("Цена не может быть отрицательной.")
-            self.cfg["profiles"][index]={"id":pid,"keywords":split_terms(values["keywords"]),"exclude_keywords":split_terms(values["exclude_keywords"]),"regions":split_terms(values["regions"]),"max_price":max_price}
+            search_url=values["search_url"]
+            if search_url:
+                from urllib.parse import urlsplit
+                uri=urlsplit(search_url)
+                if uri.scheme!="https" or uri.hostname not in ("www.avito.ru","avito.ru"):
+                    raise ValueError("Ссылка должна вести на https://www.avito.ru")
+            self.cfg["profiles"][index]={"id":pid,"keywords":split_terms(values["keywords"]),"exclude_keywords":split_terms(values["exclude_keywords"]),"regions":split_terms(values["regions"]),"max_price":max_price,"search_url":search_url}
             self.persist()
             self.refresh_profiles(index)
             messagebox.showinfo("Сохранено","Параметры поиска сохранены.")
@@ -236,10 +269,17 @@ class Application(tk.Tk):
             budget=int(self.ai_budget.get())
             if not 0<=budget<=100:raise ValueError("Лимит ИИ должен быть в диапазоне 0–100.")
             self.cfg["ai"]["max_reviews_per_run"]=budget
+            minutes=int(self.monitor_minutes.get())
+            max_calls=int(self.monitor_budget.get())
+            if not 15<=minutes<=10080:raise ValueError("Интервал должен быть 15–10080 минут.")
+            if not 0<=max_calls<=50:raise ValueError("Лимит API должен быть 0–50.")
+            self.cfg["monitor"]={"enabled":bool(self.monitor_enabled.get()),"interval_minutes":minutes,"max_calls_per_day":max_calls}
+            if self.monitor_enabled.get() and not self.api_key.get().strip():
+                raise ValueError("Для автопоиска нужен ключ API.SH.")
             if self.telegram_enabled.get() and (not self.bot_token.get().strip() or not self.chat_id.get().strip()):
                 raise ValueError("Для Telegram укажите токен бота и Chat ID.")
             import keyring
-            for username,value in (("telegram_token",self.bot_token.get().strip()),("telegram_chat_id",self.chat_id.get().strip())):
+            for username,value in (("telegram_token",self.bot_token.get().strip()),("telegram_chat_id",self.chat_id.get().strip()),("apish_key",self.api_key.get().strip())):
                 if value:keyring.set_password(SERVICE,username,value)
                 else:
                     try:keyring.delete_password(SERVICE,username)
@@ -322,6 +362,62 @@ class Application(tk.Tk):
         items.sort(key=key,reverse=descending)
         for index,(_,iid) in enumerate(items):self.table.move(iid,"",index)
         self.table.heading(col,command=lambda:self.sort_by(col,not descending))
+
+
+    def schedule_next(self):
+        if self.stop_monitor.is_set():return
+        interval=max(15,int(self.cfg.get("monitor",{}).get("interval_minutes",60)))
+        self.after(interval*60000,self.background_monitor)
+    def background_monitor(self):
+        if self.stop_monitor.is_set():return
+        self.monitor_now(silent=True)
+        self.schedule_next()
+    def monitor_now(self,silent=False):
+        if self.monitor_running:return
+        if not self.cfg.get("monitor",{}).get("enabled",False):
+            if not silent:messagebox.showinfo("Автопоиск","Включите API.SH на вкладке «Настройки» и сохраните.")
+            return
+        try:
+            import keyring
+            key=keyring.get_password(SERVICE,"apish_key")
+        except Exception as exc:
+            if not silent:messagebox.showerror("Ошибка ключа",str(exc))
+            return
+        if not key:
+            if not silent:messagebox.showerror("Нет ключа","Укажите API.SH API Key в настройках.")
+            return
+        self.monitor_running=True
+        self.status.set("Проверка новых объявлений…")
+        cfg=copy.deepcopy(self.cfg)
+        def worker():
+            try:
+                # Pull and ingest do not interact with tkinter outside main thread.
+                import keyring
+                token=keyring.get_password(SERVICE,"telegram_token")
+                chat=keyring.get_password(SERVICE,"telegram_chat_id")
+                if token:os.environ["TELEGRAM_BOT_TOKEN"]=token
+                if chat:os.environ["TELEGRAM_CHAT_ID"]=chat
+                result=run_once(cfg,key)
+                if not self.stop_monitor.is_set():
+                    self.after(0,lambda:self.monitor_done(result,None,silent))
+            except Exception as exc:
+                if not self.stop_monitor.is_set():
+                    self.after(0,lambda msg=str(exc):self.monitor_done(None,msg,silent))
+        threading.Thread(target=worker,daemon=True).start()
+    def monitor_done(self,result,error,silent):
+        self.monitor_running=False
+        if error:
+            self.status.set("Ошибка автомониторинга: "+error)
+            if not silent:messagebox.showerror("Автопоиск",error)
+            return
+        self.reload_data()
+        details=result.get("details",[])
+        text="Проверка завершена: новых сигналов "+str(result["alerts"])+". "+str(details)
+        self.status.set(text[:250])
+        if not silent:messagebox.showinfo("Автопоиск",text[:1500])
+    def close_app(self):
+        self.stop_monitor.set()
+        self.destroy()
 
     def open_selected(self):
         selection=self.table.selection()

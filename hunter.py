@@ -57,15 +57,19 @@ def risk_assessment(item):
  return min(10,sum(RISK[k] for k in flags)),flags
 
 def fetch_comps(db,profile_id,item,days):
- rows=db.execute("SELECT title,price,external_id,source FROM listings WHERE profile_id=? AND first_seen >= ?",(profile_id,(datetime.now(timezone.utc).timestamp()-days*86400),)).fetchall() if False else db.execute("SELECT title,price,external_id,source FROM listings WHERE profile_id=?",(profile_id,)).fetchall()
+ from datetime import timedelta
+ cutoff=(datetime.now(timezone.utc)-timedelta(days=max(1,days))).isoformat()
+ rows=db.execute("SELECT title,price,external_id,source,description FROM listings WHERE profile_id=? AND last_seen>=?",
+                 (profile_id,cutoff)).fetchall()
  target=tokens(item["title"])
- nums=set(re.findall(r"\d+[a-zа-я]*",norm(item["title"])))
+ nums=set(re.findall(r"\\d+[a-zа-я]*",norm(item["title"])))
  out=[]
- for title,price,eid,source in rows:
-  if (eid,source)==(item["external_id"],item["source"]): continue
+ for title,price,eid,source,description in rows:
+  if (eid,source)==(item["external_id"],item["source"]):continue
+  if risk_assessment({"title":title,"description":description})[0]>=4:continue
   words=tokens(title)
-  if not words or not target or set(re.findall(r"\d+[a-zа-я]*",norm(title)))!=nums: continue
-  if len(words&target)/len(words|target)>=0.48: out.append(price)
+  if not words or not target or set(re.findall(r"\\d+[a-zа-я]*",norm(title)))!=nums:continue
+  if len(words&target)/len(words|target)>=0.48:out.append(price)
  return out
 
 def calculate(item,comps,config):
@@ -108,35 +112,54 @@ def telegram_send(message,cfg):
  with urllib.request.urlopen(request,timeout=15):pass
 
 def ingest(db,raw_items,cfg):
- results={"imported":0,"skipped":0,"alerts":[]}
+ """Store all comparable prices first, then score new candidates independent of input order."""
+ results={"imported":0,"skipped":0,"skipped_invalid":0,"alerts":[]}
+ candidates=[]
  for raw in raw_items:
-  item=validate_item(raw)
+  try:item=validate_item(raw)
+  except (ValueError,TypeError,KeyError):
+   results["skipped_invalid"]+=1
+   continue
   for p in cfg["profiles"]:
-   if not matches_profile(item,p):continue
+   baseline_profile=dict(p,max_price=0)
+   if not matches_profile(item,baseline_profile):continue
    pid=p["id"]
-   existing=db.execute("SELECT price FROM listings WHERE source=? AND external_id=? AND profile_id=?",(item["source"],item["external_id"],pid)).fetchone()
+   existing=db.execute("SELECT price FROM listings WHERE source=? AND external_id=? AND profile_id=?",
+                       (item["source"],item["external_id"],pid)).fetchone()
+   stamp=now()
    if existing:
-    db.execute("UPDATE listings SET last_seen=?,price=?,title=?,description=?,url=? WHERE source=? AND external_id=? AND profile_id=?",(now(),item["price"],item["title"],item["description"],item["url"],item["source"],item["external_id"],pid))
-    if existing[0]!=item["price"]:db.execute("INSERT INTO price_history VALUES(?,?,?,?,?)",(item["source"],item["external_id"],pid,item["price"],now()))
+    db.execute("UPDATE listings SET last_seen=?,price=?,title=?,description=?,url=? WHERE source=? AND external_id=? AND profile_id=?",
+               (stamp,item["price"],item["title"],item["description"],item["url"],item["source"],item["external_id"],pid))
+    if existing[0]!=item["price"]:
+     db.execute("INSERT INTO price_history VALUES(?,?,?,?,?)",
+                (item["source"],item["external_id"],pid,item["price"],stamp))
     results["skipped"]+=1
     continue
-   comps=fetch_comps(db,pid,item,cfg["max_comparable_age_days"])
-   metrics=calculate(item,comps,cfg)
-   stamp=now()
-   db.execute("INSERT INTO listings VALUES(?,?,?,?,?,?,?,?,?,?)",(item["source"],item["external_id"],item["title"],item["price"],item["description"],item["region"],item["url"],stamp,stamp,pid))
-   db.execute("INSERT INTO price_history VALUES(?,?,?,?,?)",(item["source"],item["external_id"],pid,item["price"],stamp))
+   db.execute("INSERT INTO listings VALUES(?,?,?,?,?,?,?,?,?,?)",
+              (item["source"],item["external_id"],item["title"],item["price"],item["description"],item["region"],item["url"],stamp,stamp,pid))
+   db.execute("INSERT INTO price_history VALUES(?,?,?,?,?)",
+              (item["source"],item["external_id"],pid,item["price"],stamp))
    results["imported"]+=1
-   if metrics and metrics["discount_fraction"]>=cfg["minimum_discount"] and metrics["estimated_profit_rub"]>=cfg["minimum_profit_rub"] and metrics["risk_score"]<4:
-    alert={"profile":pid,"item":item,"metrics":metrics}
-    db.execute("INSERT OR IGNORE INTO alerts VALUES(?,?,?,?,?,?)",(item["source"],item["external_id"],pid,stamp,metrics["score"],json.dumps(alert,ensure_ascii=False)))
-    results["alerts"].append(alert)
+   if matches_profile(item,p):
+    candidates.append((item,pid,stamp))
  db.commit()
- for alert in results["alerts"][:cfg.get("ai",{}).get("max_reviews_per_run",3)]:
+ for item,pid,stamp in candidates:
+  comps=fetch_comps(db,pid,item,cfg["max_comparable_age_days"])
+  metrics=calculate(item,comps,cfg)
+  if metrics and metrics["discount_fraction"]>=cfg["minimum_discount"] and metrics["estimated_profit_rub"]>=cfg["minimum_profit_rub"] and metrics["risk_score"]<4:
+   alert={"profile":pid,"item":item,"metrics":metrics}
+   cursor=db.execute("INSERT OR IGNORE INTO alerts VALUES(?,?,?,?,?,?)",
+                     (item["source"],item["external_id"],pid,stamp,metrics["score"],json.dumps(alert,ensure_ascii=False)))
+   if cursor.rowcount:results["alerts"].append(alert)
+ db.commit()
+ for alert in sorted(results["alerts"],key=lambda x:x["metrics"]["score"],reverse=True)[:cfg.get("ai",{}).get("max_reviews_per_run",3)]:
   note=ai_review(db,alert["item"],alert["metrics"],cfg)
   if note:alert["ai_review"]=note
  for alert in results["alerts"]:
   m=alert["metrics"];item=alert["item"]
-  telegram_send(f'{item["title"]}: {item["price"]:.0f} ₽; медиана {m["market_median"]} ₽; потенциальная прибыль {m["estimated_profit_rub"]} ₽. {item["url"]}',cfg)
+  try:
+   telegram_send(f'{item["title"]}: {item["price"]:.0f} ₽; медиана {m["market_median"]} ₽; потенциальная прибыль {m["estimated_profit_rub"]} ₽. {item["url"]}',cfg)
+  except Exception as exc:results.setdefault("notification_errors",[]).append(str(exc))
  return results
 
 def main():
