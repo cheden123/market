@@ -1,32 +1,38 @@
 # Market Value Hunter
 
-Local-first Python tool for finding potentially undervalued marketplace listings. Intended for personal purchases and resale research.
+Программа для поиска потенциально недооценённых товаров при личной покупке и перепродаже.
 
-## Windows quick start (Python 3.11+)
+## Для Windows — без командной строки
+
+Перейдите на [Actions → Build Windows executable](https://github.com/cheden123/market/actions/workflows/build-windows.yml), откройте успешный запуск, скачайте артефакт **MarketValueHunter-Windows**, распакуйте ZIP и запустите `MarketValueHunter.exe`.
+
+При первом запуске приложение создаёт настройки и базу в `%LOCALAPPDATA%\\MarketValueHunter`. Python не требуется. Программа может предупреждать Windows SmartScreen, поскольку EXE не подписан цифровой подписью.
+
+**Сейчас это локальный анализатор JSON, а не живой мониторинг Авито.** Автоматическое получение объявлений ещё не реализовано. Настройки поиска определяют, какие импортированные объявления анализируются.
+
+## Как пользоваться
+
+1. На вкладке **Поиски** добавьте название товара, исключающие слова, регион и максимальную цену. Нажмите **Сохранить поиск**.
+2. На вкладке **Настройки** задайте минимальную скидку, прибыль, комиссии и резерв. При необходимости включите Telegram и укажите токен бота / Chat ID. Нажмите **Сохранить все настройки**.
+3. На вкладке **Предложения** нажмите **Загрузить объявления (JSON)** или **Загрузить демо**.
+4. Дважды щёлкните по результату, чтобы открыть ссылку.
+
+Для Telegram секреты хранятся через Windows Credential Manager (библиотека keyring), а не в конфигурационном файле. Локальный ИИ через Ollama опционален и по умолчанию выключен. Для работы ИИ потребуется установить Ollama отдельно и загрузить указанную модель.
+
+## Самостоятельный запуск из исходников
+
+Нужен Python 3.11+:
 
 ```powershell
-py -3 hunter.py init
-py -3 hunter.py ingest example_listings.json
-py -3 hunter.py report
+py -3 -m pip install keyring
+py -3 app_gui.py
 py -3 -m unittest discover -s tests -v
 ```
 
-Data input: JSON array of objects with source, external_id, title, price (RUB), url; optional description and region. Configure profiles, thresholds, Telegram and Ollama in config.json.
+Исходный CLI также работает: `py -3 hunter.py init`, `py -3 hunter.py ingest example_listings.json`, `py -3 hunter.py report`.
 
-## Features
+## Источники, ограничения и оценка
 
-- SQLite listings, price change history, duplicate suppression and alert history.
-- Keyword/region/price watch profiles.
-- Comparables filtered by model numbers and title token similarity; robust median/MAD.
-- Estimated resale profit after fees, shipping and repair reserve.
-- Risk phrase detection. Alerts only when discount, margin and risk thresholds permit.
-- Optional Telegram bot alerts via TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables.
-- Optional Ollama local review with response cache and max_reviews_per_run budget.
+Вход — JSON-массив объявлений с полями `source`, `external_id`, `title`, `price`, `url`, необязательными `description`, `region`. Демо-объявления вымышленные. Сопоставления делаются по заголовку и модели; исторические цены предложений не равны подтверждённым ценам продаж. Прибыль приблизительная. Необходимо проверять комплектность, состояние и продавца. Подключайте только допустимые источники, не обходите ограничения сайтов.
 
-## Important limitations
-
-**No automatic Avito data acquisition yet.** The MVP analyzes imported JSON. Supply listings via a lawful permitted data source. Do not bypass CAPTCHA, access controls or platform limits. Comparables are *asking prices*, not confirmed sale prices; estimated profit is not guaranteed. State/condition, scams and inaccurate matches require manual verification. Keep secrets out of Git.
-
-## Token budget
-
-LLM is off by default. All filtering, matching, scoring, and deduplication use deterministic local algorithms without tokens. When enabled, Ollama reviews only qualifying alerts, caches duplicate prompts, and caps reviews per run.
+**Экономия токенов:** фильтры и статистика не требуют LLM; локальная Ollama вызывается лишь для отобранных предложений, ограничена бюджетом и кэшируется.
